@@ -4,6 +4,13 @@ This repository describes the technical architecture of **Chiruru (ちるる)**,
 
 > Status: v1 (November 2026). The production-path claims were checked against the implementation and configuration at that time. Anything that could not be verified is left out or marked as such. Experimental, shadow, and retired components are left out unless a section says otherwise.
 
+## See Chiruru in Action
+
+Chiruru is a continuously operating AI VTuber project, not just an architecture prototype.
+
+- **YouTube:** [Watch live streams and recordings](https://www.youtube.com/@chiruruai)
+- **Twitch:** [Visit the channel](https://www.twitch.tv/chiruruai)
+
 ## What is Chiruru?
 
 Chiruru is an AI VTuber project: a live show run entirely by AI characters.
