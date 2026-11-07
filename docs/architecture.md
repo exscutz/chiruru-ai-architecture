@@ -30,14 +30,9 @@ This document describes the **current production path** of Chiruru (status: Nove
 
 ### Inside the live bot
 
-At startup the bot:
+At startup the bot loads settings, checks for signs of an unclean previous shutdown, and connects the broadcast, avatar, and overlay controllers.
 
-- loads settings;
-- checks for a stale "streaming" flag left by an earlier crash;
-- writes a PID file;
-- connects the OBS, YouTube broadcast, VTube Studio, and overlay controllers.
-
-It then starts these concurrent tasks under one supervisor (`asyncio.gather` with exceptions collected rather than propagated):
+It then starts these concurrent tasks under one supervisor, which collects task failures instead of letting one task take down the others:
 
 - Discord client
 - Live stream bot: chat intake plus the stream cycle
@@ -45,21 +40,21 @@ It then starts these concurrent tasks under one supervisor (`asyncio.gather` wit
 - Error monitor loop
 - Inference-server recovery service
 
-It also registers three in-process APScheduler jobs: live scheduling, Shorts scheduling, and the post-stream sweeper. In dry-run mode the schedulers are **not started at all**. That way a scheduled job cannot change YouTube or OBS state by bypassing per-call dry-run checks.
+It also registers three in-process scheduled jobs: live scheduling, Shorts scheduling, and the post-stream sweeper. In dry-run mode the schedulers are **not started at all**. That way a scheduled job cannot change YouTube or OBS state by bypassing per-call dry-run checks.
 
 ## 2. Component Responsibilities
 
 | Component | Responsibility | Does not do |
 |---|---|---|
 | **Trend fetcher** | Fetches RSS feeds on an interval, resolves redirects, filters unsafe topics, extracts and caches article text | Ranking or show decisions |
-| **Topic selector** | Scores candidates with the local LLM, deduplicates them, applies the score threshold, queue size and per-category caps, and keeps dropped items as "unaired headlines" | Generating speech |
+| **Topic selector** | Scores candidates with the local LLM, deduplicates them, applies quality and diversity limits, and keeps dropped items as "unaired headlines" | Generating speech |
 | **Stream cycle / phase router** | Runs the show as a phase state machine and picks the next phase with deterministic rules and configured probabilities | Writing content |
 | **Comment intake** | Normalises chat from each platform into one message type and selects and batches comments between and during phases | Generating replies directly |
 | **Riria responder** | Generates Riria's turns through the same LLM queue, using Riria's profile and Chiruru's preceding line as input. Validates the output before playback. A routing step decides whether a viewer comment is answered by Chiruru or by Riria. | Leading the show |
 | **Prompt assembly** | Builds system and user prompts from persona, platform, task templates and retrieved context. One composer owns the chat-reply system prompt. | Calling the LLM |
-| **LLM client** | Calls the local inference server's chat API, with or without streaming. The model name comes from configuration. It sends only an allowlist of sampling options, removes reasoning tags, records the model name the server actually reported, and records each call outcome. | Queueing or retries across callers |
+| **LLM client** | Calls the local inference server's chat API, with or without streaming. The model name comes from configuration. It normalises request options and responses, and records which model actually answered and the outcome of each call. | Queueing or retries across callers |
 | **LLM execution queue** | The single gateway to the local LLM: one worker, a priority queue, and a timeout per job | Choosing the model |
-| **Inference-server recovery service** | Detects stalls from call outcomes and server logs, confirms them with a probe, and reloads the model through the server's management interface, within limits | Changing the model or the prompts |
+| **Inference-server recovery service** | Detects stalls from runtime signals, confirms them before acting, and reloads the model through the server's management interface, within rate limits | Changing the model or the prompts |
 | **Speech pipeline** | Splits streamed text into sentence or comma chunks, sends them to the configured TTS backend, and schedules playback | Deciding what to say |
 | **Playback and subtitles** | Plays audio into the broadcast mix, sets loudness and stereo position per character, starts subtitles when playback starts, and drives Chiruru's lip sync. Riria's avatar is a separate overlay in OBS. | Synthesis |
 | **Memory store** | Holds the raw buffer, history, Mem0, and Chroma collections. It runs batch summarisation and retrieval. | Real-time generation |
@@ -68,17 +63,11 @@ It also registers three in-process APScheduler jobs: live scheduling, Shorts sch
 
 ### Characters on one model
 
-- **Character profile.** A small, immutable record per character selects:
-  - the persona definition;
-  - sampling options;
-  - a fallback line;
-  - which context features apply. For example, a runtime persona state is used for Chiruru but not for Riria.
-
-  Unknown speaker names resolve to the main host.
-- **Speaker identity.** The speaker travels with the request through the generation workflow. Both characters share one LLM queue. Queue jobs are tagged by the component that submitted them, not by speaker.
-- **Turn linkage.** A Riria turn takes Chiruru's preceding line as input. It is stored in the raw buffer with a link to that line.
+- **Character profile.** A small, immutable record per character selects the persona definition, generation settings, a fallback line, and which context features apply.
+- **Speaker identity.** The speaker travels with the request through the generation workflow. Both characters share one LLM queue.
+- **Turn linkage.** A Riria turn takes Chiruru's preceding line as input, and the two are linked in the exchange log.
 - **Outputs.** Each character has a separate voice configuration and a separate avatar output: a VTube Studio model for Chiruru and an OBS overlay for Riria.
-- **Code structure.** The chat-reply path is shared and switched by profile. Riria's in-show turns still run through a separate set of modules beside the main path. The two are not yet fully unified.
+- **Code structure.** The chat-reply path is shared and switched by profile. Riria's in-show turns use a dedicated set of modules beside the main path.
 
 ## 3. Data and Control Flow
 
@@ -86,9 +75,9 @@ It also registers three in-process APScheduler jobs: live scheduling, Shorts sch
 
 1. **Fetch.** RSS search feeds, each tagged with a hand-assigned category, are fetched on an interval. The set is mostly AI, LLM, and GPU queries, plus some non-AI categories for variety. Already-seen topics are filtered out.
 2. **Extract.** The article body is extracted from the page, falling back to a headless browser when that fails. It is cached in SQLite.
-3. **Score.** The local LLM rates each candidate's importance into coarse levels, using a short excerpt of the body. If scoring fails, the item gets a neutral low score. It is not dropped.
+3. **Score.** The local LLM rates each candidate's importance into coarse levels. A scoring failure lowers the item's rank instead of dropping it.
 4. **Deduplicate.** Items are deduplicated first by title, then by sentence-embedding similarity. Embedding runs in a worker thread, because running it on the event loop was observed to stall the show for several seconds. Items held in reserve fill any shortfall.
-5. **Cap.** A minimum score, a maximum queue size, a per-category cap, and a per-session dedup are applied. Dropped items are kept as *unaired headlines*, which filler segments can use as material.
+5. **Cap.** Quality, queue-size, and category-diversity limits are applied. Dropped items are kept as *unaired headlines*, which filler segments can use as material.
 6. **Pop.** When the show needs the next topic, it checks sources in this order:
    - the pre-stream editorial cursor, if one exists ([§4](#4-local-vs-cloud-llm));
    - otherwise the normal queue, which avoids categories used recently.
@@ -122,14 +111,13 @@ prompt ─► LLM queue ─► local LLM server (streamed tokens)
        ─► exchange logged to raw buffer (SQLite)
 ```
 
-- **Runaway guard.** TTS streaming stops a chunk if the generated audio runs far longer than the text's expected length.
-- **File fallback.** If streaming fails before playback starts, the chunk can be synthesized as a whole file instead. Once playback has started, there is no fallback for that chunk.
+- **Guards.** TTS streaming is guarded against runaway generation. A chunk falls back to whole-file synthesis only if its playback has not started.
 
 ### 3.4 Post-stream pipeline
 
-1. When the stream recording is saved, the recording writer **arms** the post-stream sweeper with the recording time. The sweeper uses that return value directly and does not read a shared database.
+1. When the stream ends and its recording record is saved, the live bot **arms** the post-stream sweeper with that record. The sweeper takes the value directly and does not read a shared database.
 2. After a delay, the sweeper starts the post-stream systemd unit periodically, for a bounded number of attempts. The start is non-blocking. A catch-up check also runs shortly after the bot starts.
-3. The worker takes a dedicated lock and reads an activation flag. **If the flag cannot be read, it does not run.** It then finds backlog sessions and reads receipts.
+3. The worker takes a lock and checks that it is allowed to run. **If that cannot be confirmed, it does not run.** It then finds backlog sessions and reads their receipts.
 4. It runs a capability preflight, then dispatches the registered actions:
    - event extraction;
    - YouTube description;
@@ -139,9 +127,9 @@ prompt ─► LLM queue ─► local LLM server (streamed tokens)
    - Shorts analytics;
    - reach reports.
 
-   All YouTube operations are serialized by a named lock.
-5. Each action's receipt is in one of these states: `pending`, `success`, `retryable_failure`, `terminal_failure`, or `retry_budget_exhausted`. A `blocked` or `resource_busy` result does not use up a retry.
-6. The worker prints exactly one machine-readable result line and exits with a status code. The code distinguishes three outcomes: done, work remaining, and no capability available.
+   All YouTube operations are serialized.
+5. Each action's receipt separates success, retryable failure, and terminal failure. Temporary resource contention does not consume the retry budget.
+6. The worker reports a machine-readable result, so the scheduler can tell finished work from remaining work.
 
 ## 4. Local vs Cloud LLM
 
@@ -168,26 +156,16 @@ prompt ─► LLM queue ─► local LLM server (streamed tokens)
 |---|---|---|---|
 | **Raw buffer** (SQLite) | Rolling log of every generated exchange, including the raw response | Response pipeline | Batch summariser, audits |
 | **History** (SQLite) | Chat history | Response pipeline | Prompt assembly |
-| **Mem0** | Semantic memory: extracted facts and preferences, per-viewer profiles kept apart by platform, and a self-memory namespace for each character | Batch summariser. Self-memory is written by a separate step that the operator runs. | Retrieval for prompts |
-| **Chroma** | Episodic text, past opinions, persona knowledge for each character | Batch summariser, opinion store | Deep-dive retrieval, persona retrieval (Chiruru and Riria) |
-| **Curated knowledge** (JSON) | Hand-maintained public facts, matched by rule | Operator | Prompt assembly, with a small cap on entries and characters |
+| **Mem0** | Semantic memory: extracted facts and preferences, per-viewer profiles kept apart by platform, and per-character self-memory | Batch summariser and a separate self-memory extraction step | Retrieval for prompts |
+| **Chroma** | Episodic text, past opinions, persona knowledge | Batch summariser, opinion store | Deep-dive and persona retrieval |
+| **Curated knowledge** | Hand-maintained public facts, matched by rule | Operator | Prompt assembly, within a size cap |
 | **Opinion supersession** (SQLite) | Marks past opinions that later ones contradict, so they are not injected again | Opinion store and admin tools | Past-opinion supply |
 
-**Per-character separation, as implemented.**
+**Persona, state, and memory separation.**
 
-| Data | Separated per character? | How |
-|---|---|---|
-| Persona definition | Yes | Separate definitions, chosen by the character profile |
-| Runtime state | Yes | Chiruru uses a persona state. Riria keeps an in-memory session history. |
-| Raw buffer | Tagged | A character column limited to the two characters. Riria rows link to Chiruru's line. |
-| Stream memory (Chroma) | Yes, on read | The character is written into metadata at batch time. Retrieval filters results by character. |
-| Chat history | Yes, on read | Assistant turns are filtered by character |
-| Self-memory (Mem0) | Yes | A separate namespace per character |
-| General memory (Mem0) | **No** | One namespace. The character is stored only as metadata. |
-| Persona knowledge (Chroma) | **No** | Shared collection. Riria's entries are distinguished only by a label. |
-| Past opinions | **No** | Not tagged by character |
-
-Q&A-corner lines are kept as records but are excluded from both characters' memory writes.
+- **Persona.** Each character has a separate definition. Character profiles select them.
+- **State.** Runtime state is kept per character.
+- **Memory.** Exchanges are tagged with the speaking character. Character-specific context is isolated where supported: stream-memory retrieval, chat history, and self-memory are scoped per character. Some memory components remain shared between the characters, with the character recorded as metadata.
 
 **Context supply rules.**
 
@@ -198,7 +176,7 @@ Q&A-corner lines are kept as records but are excluded from both characters' memo
   4. history.
 
 - **Token budget.** Each prompt has a fixed budget split between the system prompt, the user turn, and history. When the prompt exceeds the budget, each section is trimmed separately.
-- **What reaches Chroma.** Only exchanges that pass write filters are stored. The filters are multi-turn exchanges, important external information, strong emotion, or long responses.
+- **What reaches Chroma.** Only exchanges that pass write filters are stored, so episodic memory keeps what is worth recalling.
 - **Past opinions.** Only a fixed-length head of each past opinion is injected, after normalisation and sanitising. The contradiction check uses the same head, so it judges exactly what the model would see.
 - **Viewer memory.** Returning viewers are labelled as such. **If the memory lookup fails, the viewer is not treated as new.** This prevents the "nice to meet you" mistake with regulars.
 
@@ -207,27 +185,25 @@ Q&A-corner lines are kept as records but are excluded from both characters' memo
 | Failure | Behaviour | Mode |
 |---|---|---|
 | **LLM call is slow** | Each call has a timeout that is kept below the queue's own outer limit | Bounded |
-| **Inference server stalls** | The recovery service reloads the model after repeated timeouts are confirmed by a probe. It acts only on a successful state read, waits a minimum interval between reloads, has a daily cap, and doesn't repeat notifications when the state hasn't changed. | Self-healing, rate-limited |
-| **Server rejects extended sampling options** | The client retries without them | Graceful degradation |
+| **Inference server stalls** | The recovery service confirms the stall before acting and then reloads the model. Reloads are rate-limited so recovery cannot become a loop. | Self-healing, rate-limited |
 | **One utterance fails in TTS or playback** | It is logged and skipped. The playback queue keeps going. | Fail-open |
 | **Audio device open or close hangs** | These calls run on a dedicated executor, and close has a time limit | Isolated |
-| **News scoring fails** | The item gets a neutral low score and stays a candidate | Fail-open |
+| **News scoring fails** | The item stays a candidate at a lower rank | Fail-open |
 | **Editorial plan is missing or used up** | Selection falls back to the normal queue | Fail-open |
-| **Riria output fails validation** | The validator retries with an instruction built from the violations. After the retries it uses a fallback line. Every attempt is recorded. | Bounded retry, then fallback |
-| **Output matches a persona-integrity pattern** | The response is replaced by the speaking character's fallback line | Fail-safe |
+| **Character output fails validation** | The output is regenerated with corrective guidance or replaced with a safe fallback line. Attempts are recorded. | Bounded retry, then fallback |
 | **Observation or shadow store write fails** | A warning is logged and the show continues | Fail-open |
-| **Post-stream activation flag unreadable** | The worker does not run | Fail-closed |
+| **Post-stream preconditions cannot be confirmed** | The worker does not run | Fail-closed |
 | **Post-stream action fails** | Its receipt moves to a retry or terminal state. The sweeper tries again later, within a retry budget. | Bounded retry |
-| **Bot crashes mid-stream** | A stale streaming flag is detected at the next start and passed to the next stream's start logic. systemd restarts the bot, with a restart cap. | Recover on restart |
+| **Bot crashes mid-stream** | The unclean shutdown is detected at the next start and taken into account. systemd restarts the bot, with a restart cap. | Recover on restart |
 
 ## 7. Observability
 
-- **Generation log.** Every exchange is stored in the raw buffer with its raw response and output source. Offline audit scripts use it to find prompt keys with high warning rates and the worst samples.
+- **Generation log.** Every exchange is stored in the raw buffer with its raw response and output source. Offline audit scripts use it to find weak prompts and the worst samples.
 - **Speech timing.** Subtitle show and hide events, keyed by utterance, are logged as the source of truth for when each line was actually on screen. Generation timestamps are not used for this.
-- **LLM health.** Every LLM call records an outcome (ok or timeout), which feeds the recovery service. Outgoing request payloads can be recorded, so the prompt the model actually received can be compared with what was intended.
-- **Prompt A/B configuration.** Variants live in a config file that is read on every request, so changing the traffic split needs no restart. Prompt text files are cached, so changing the text does need a restart.
+- **LLM health.** Every LLM call records its outcome, which feeds the recovery service. Outgoing request payloads can be recorded, so the prompt the model actually received can be compared with what was intended.
+- **Prompt A/B configuration.** Prompt variants and traffic splits are managed in configuration, separately from the prompt text.
 - **Character consistency.**
-  - **Live checks.** These are rule-based. Riria's output is checked against a set of role and format rules. Every response passes a persona-integrity pattern check.
+  - **Live checks.** These are rule-based. Riria's output is checked against role and format rules. Responses generated through the main generation workflow also pass a persona-integrity check.
   - **Provenance.** Attempts, violations, and fallback use are recorded.
   - **Shadow check.** An embedding-similarity check runs in shadow mode. It is logged and never blocks a response.
   - **Offline checks.** The prompt validator checks persona coverage, and post-stream observation and weekly reviews follow persona tracks.

@@ -56,18 +56,14 @@ Six decisions that shape Chiruru's architecture. Each one is implemented in the 
 
 - **The queue.** All LLM work goes through one execution queue: a single worker, a priority queue, a timeout per job, and a tag recording which component submitted each job.
 - **Timeouts.** Each call's timeout is kept below the queue's outer limit, so timeouts nest predictably.
-- **The recovery service.** A recovery service watches call outcomes and the server log, confirms a stall with a probe, and then reloads the model through the inference server's management interface.
-- **Recovery limits.**
-  - It acts only after a successful state read, never on a guess.
-  - It has a minimum interval between reloads and a daily cap.
-  - It skips the notification when the state hasn't changed.
+- **The recovery service.** It watches runtime signals, confirms a stall before acting, and then reloads the model through the inference server's management interface.
+- **Recovery limits.** It acts only on confirmed state, never on a guess, and its reloads are rate-limited.
 
 **Trade-offs.**
 
 - ➕ Predictable latency for high-priority work, and one place to observe LLM load.
 - ➕ Stalls recover without the operator stepping in, and the limits stop the watchdog from causing a reload loop.
 - ➖ Throughput is serialized by design.
-- ➖ One subtle rule: a job submitted *from inside* a queue job runs inline to avoid deadlock, which silently skips prioritisation. The code documents this rule explicitly.
 
 ## 3. Post-stream automation: in-process trigger, out-of-process worker, receipts
 
@@ -85,19 +81,18 @@ Six decisions that shape Chiruru's architecture. Each one is implemented in the 
 
 **Decision.** C.
 
-- **The trigger.** The recording writer passes the recording time straight to an in-process **sweeper**. The sweeper uses that return value and does not query a shared database.
+- **The trigger.** When the stream ends and its recording record is saved, the live bot passes that record straight to an in-process **sweeper**. The sweeper uses it directly and does not query a shared database.
 - **The retry schedule.** The sweeper starts the post-stream systemd oneshot without blocking: first after a delay, then periodically, for a bounded number of attempts.
-- **The worker.** It runs under a lock and checks an activation flag. If the flag can't be read, it does not run.
-- **Receipts.** Each action has a receipt in one of these states: `pending`, `success`, `retryable_failure`, `terminal_failure`, or `retry_budget_exhausted`.
-- **Retry budget.** `blocked` and `resource_busy` results do not count against the budget.
-- **YouTube writes.** These are serialized by a named lock.
+- **The worker.** It runs under a lock and does not run when its preconditions cannot be confirmed.
+- **Receipts.** Each action's receipt separates success, retryable failure, and terminal failure, within a bounded retry budget. Temporary resource contention does not consume the budget.
+- **YouTube writes.** These are serialized.
 
 **Trade-offs.**
 
 - ➕ Re-running is always safe, and a partial failure resumes where it stopped.
 - ➕ Heavy work never shares a process with the live show.
 - ➖ More moving parts: a sweeper, a unit, receipts, and a lock.
-- ➖ A failure of the trigger itself would leave work unstarted. A catch-up check at bot start and a manual recap procedure cover that case.
+- ➖ A failure of the trigger itself would leave work unstarted. A catch-up check at bot start and a manual recovery procedure cover that case.
 
 ## 4. Streamed speech with playback-anchored subtitles and fail-open playback
 
@@ -115,7 +110,7 @@ Six decisions that shape Chiruru's architecture. Each one is implemented in the 
 
 **Decision.** C.
 
-- **Chunking.** Streamed LLM output is buffered and cut at sentence and comma boundaries, with minimum and threshold lengths.
+- **Chunking.** Streamed LLM output is buffered and cut at sentence and comma boundaries.
 - **Synthesis.** Each chunk is streamed through a self-hosted TTS server, reached through a pluggable backend interface.
   - A guard stops a chunk whose audio runs far longer than its text should.
   - If streaming fails *before* playback starts, the chunk can be synthesized as a whole file instead. Once playback has started, there is no fallback.
@@ -181,13 +176,12 @@ Six decisions that shape Chiruru's architecture. Each one is implemented in the 
 - **Profiles.** A small, immutable profile per character selects the persona definition, sampling options, fallback line, and which context features apply. The profile replaced the scattered special-case checks.
 - **Shared generation.** Both characters use the same LLM queue and the same prompt composer. The speaker identity travels with the request.
 - **Scoped stores.** Stream memory, chat history, and self-memory are scoped per character. Riria's turns are stored with a link to the Chiruru line they respond to.
-- **Validation.** Riria's output passes a rule-based validator, which retries with a corrective instruction and then falls back. Every response also passes a persona-integrity check, which replaces a violating response with the speaking character's fallback line.
+- **Validation.** Riria's output is validated before playback. Failing output is regenerated with corrective guidance or replaced with a safe fallback. Responses from the main generation workflow also pass a persona-integrity check.
 
 **Trade-offs.**
 
 - ➕ One model, one queue, and one composer serve both characters. A per-character difference becomes a profile field, not a new branch in the code.
 - ➕ Validator attempts and fallback use are recorded, so failures in character consistency can be audited.
-- ➖ Separation is partial. General memory, persona knowledge, and past opinions are shared, and stream-memory scoping is a filter applied after retrieval.
-- ➖ Unknown speaker names fall back to the main host.
+- ➖ Separation is partial. Character-specific context is isolated where supported, while some memory components remain shared.
 - ➖ Riria's in-show turns still run through modules beside the main path.
-- ➖ Consistency checks are rule-based. The embedding-based check runs only in shadow mode, and there is no measured live consistency metric.
+- ➖ Consistency checks are rule-based. A similarity-based check runs only in shadow mode, and there is no measured live consistency metric.
