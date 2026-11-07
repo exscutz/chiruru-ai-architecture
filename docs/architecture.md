@@ -23,7 +23,6 @@ This document describes the **current production path** of Chiruru (status: Nove
 | **Live bot** | One long-running Python asyncio process, run as a systemd user service. The operator starts it on stream days. The service restarts on failure, with a cap on restarts. | Live show, chat, speech, avatar, OBS control, in-process schedulers |
 | **Live slot creator** | systemd timer, daily, oneshot | Creates the day's YouTube Live slot. Running it twice does no harm. |
 | **Post-stream worker** | systemd oneshot, started by the live bot after a recording is saved | Unattended post-stream actions (see [§3.4](#34-post-stream-pipeline)) |
-| **Waiting-scene data builder** | systemd timer, daytime only, oneshot | Builds render data for the off-air scene. It runs only while the bot is stopped. |
 | **Local inference server** | Separate local server | Serves the local LLM through a chat-completions HTTP API |
 | **TTS server** | Separate self-hosted server | Streams synthesized speech over HTTP |
 | **OBS / VTube Studio** | Desktop applications | Broadcast composition, recording, and avatar rendering, controlled through their WebSocket APIs |
@@ -53,7 +52,7 @@ It also registers three in-process scheduled jobs: live scheduling, Shorts sched
 | **Riria responder** | Generates Riria's turns through the same LLM queue, using Riria's profile and Chiruru's preceding line as input. Validates the output before playback. A routing step decides whether a viewer comment is answered by Chiruru or by Riria. | Leading the show |
 | **Prompt assembly** | Builds system and user prompts from persona, platform, task templates and retrieved context. One composer owns the chat-reply system prompt. | Calling the LLM |
 | **LLM client** | Calls the local inference server's chat API, with or without streaming. The model name comes from configuration. It normalises request options and responses, and records which model actually answered and the outcome of each call. | Queueing or retries across callers |
-| **LLM execution queue** | The single gateway to the local LLM: one worker, a priority queue, and a timeout per job | Choosing the model |
+| **LLM execution queue** | Serializes live speech generation: one worker, a priority queue, and a timeout per job. Some background and supporting operations call the inference server through separate paths. | Choosing the model |
 | **Inference-server recovery service** | Detects stalls from runtime signals, confirms them before acting, and reloads the model through the server's management interface, within rate limits | Changing the model or the prompts |
 | **Speech pipeline** | Splits streamed text into sentence or comma chunks, sends them to the configured TTS backend, and schedules playback | Deciding what to say |
 | **Playback and subtitles** | Plays audio into the broadcast mix, sets loudness and stereo position per character, starts subtitles when playback starts, and drives Chiruru's lip sync. Riria's avatar is a separate overlay in OBS. | Synthesis |
@@ -139,16 +138,17 @@ prompt ─► LLM queue ─► local LLM server (streamed tokens)
 | News importance scoring | **Local** | During the stream |
 | Memory summarisation and stream digests | **Local** | During or after the stream |
 | Pre-stream editorial: topic order and program labels | **Cloud** | **Before the stream** |
+| Optional reaction context for the current news topic | **Cloud** | During the stream, in the background |
 | Post-stream reflection and observation extraction | **Cloud** | After the stream |
-| Shorts clip scoring | **Cloud** | After the stream |
 | Offline evaluation and LLM-as-judge | **Cloud** | Offline only |
 
-**The boundary rule.** A cloud LLM never runs inside the live speech loop, and it never writes a line spoken in the live stream.
+**The boundary rule.** Local LLMs generate the final spoken output. Cloud services may provide optional context during a broadcast, but they do not generate live speech.
 
 - **Before the stream.** The editorial step runs only in the preparation phase. If it fails or its output runs out, topic selection falls back to the local queue.
-- **What the cloud may supply.** Planning inputs only: topic order, short labels, and membership judgments. They reach the deep-dive prompt through a fixed template. Opinions, self-description, and every line spoken in the live stream come from the local model.
+- **During the stream.** One optional background step can gather external reaction context for the current news topic. It runs as a background task with a deadline. The show does not wait for it. If the context is not ready when it is needed, the optional segment is skipped. When the context is used, it is input material for the local model.
+- **What the cloud may supply.** Planning inputs and optional context: topic order, short labels, membership judgments, and reaction context. Planning inputs reach the deep-dive prompt through a fixed template. Opinions, self-description, and every line spoken in the live stream come from the local model.
 - **After the stream.** Cloud models score and analyse what was already broadcast. They do not change the live show.
-- **Provider independence.** The live path has no dependency on any cloud provider. Cloud tasks are offline and can be moved to another provider without touching the live system.
+- **Provider independence.** Live speech does not depend on any cloud provider. If cloud services are unavailable, the show continues without the optional context. Cloud tasks sit outside the speech path, so they can be moved to another provider without touching live speech generation.
 
 ## 5. State and Memory
 
@@ -190,6 +190,7 @@ prompt ─► LLM queue ─► local LLM server (streamed tokens)
 | **Audio device open or close hangs** | These calls run on a dedicated executor, and close has a time limit | Isolated |
 | **News scoring fails** | The item stays a candidate at a lower rank | Fail-open |
 | **Editorial plan is missing or used up** | Selection falls back to the normal queue | Fail-open |
+| **Optional cloud context is late or fails** | The optional segment is skipped. The show does not wait for it. | Fail-open |
 | **Character output fails validation** | The output is regenerated with corrective guidance or replaced with a safe fallback line. Attempts are recorded. | Bounded retry, then fallback |
 | **Observation or shadow store write fails** | A warning is logged and the show continues | Fail-open |
 | **Post-stream preconditions cannot be confirmed** | The worker does not run | Fail-closed |

@@ -13,7 +13,7 @@ flowchart LR
         Comments["Comment intake<br/>and batching"]
         Profiles["Character profiles<br/>(Chiruru / Riria)"]
         Prompt["Prompt assembly<br/>persona + task + context"]
-        Queue["LLM execution queue<br/>single worker, priority"]
+        Queue["LLM execution queue<br/>live speech, priority"]
         Recovery["Inference server<br/>recovery service"]
         Speech["Speech pipeline<br/>sentence chunking"]
         Playback["Audio playback<br/>queue"]
@@ -36,8 +36,9 @@ flowchart LR
         VTS["VTube Studio<br/>Chiruru avatar + lip sync"]
     end
 
-    subgraph Offline["Offline / pre-stream (never during live speech)"]
+    subgraph Offline["Cloud-assisted work (never generates live speech)"]
         Editorial["Pre-stream editorial<br/>(cloud LLM)"]
+        Enrich["Optional topic context<br/>(background, during stream)"]
         PostStream["Unattended post-stream jobs<br/>(systemd oneshot)"]
         Cloud["Cloud LLM<br/>(planning, scoring, evaluation)"]
     end
@@ -60,4 +61,6 @@ flowchart LR
     Cycle -- "stream ends,<br/>recording saved" --> Sweeper
     Sweeper -- "starts" --> PostStream
     Editorial -- "uses" --> Cloud
+    Enrich -- "uses" --> Cloud
+    Enrich -. "optional context,<br/>used only if ready" .-> Prompt
     PostStream -- "uses" --> Cloud
