@@ -1,0 +1,62 @@
+%% Chiruru AI - system overview (current production path only)
+%% Experimental, shadow, deprecated and planned components are intentionally omitted.
+flowchart LR
+    subgraph Sources["External inputs"]
+        RSS["News RSS feeds"]
+        Chat["Live chat<br/>(YouTube Live / Twitch)"]
+    end
+
+    subgraph Bot["Resident bot process (single asyncio app)"]
+        Fetch["Trend fetcher<br/>fetch + article extraction"]
+        Select["Topic selection<br/>LLM scoring, dedup, caps"]
+        Cycle["Stream cycle<br/>phase state machine"]
+        Comments["Comment intake<br/>and batching"]
+        Profiles["Character profiles<br/>(Chiruru / Riria)"]
+        Prompt["Prompt assembly<br/>persona + task + context"]
+        Queue["LLM execution queue<br/>single worker, priority"]
+        Recovery["Inference server<br/>recovery service"]
+        Speech["Speech pipeline<br/>sentence chunking"]
+        Playback["Audio playback<br/>queue"]
+        Sweeper["Post-stream sweeper<br/>(armed when recording is saved)"]
+    end
+
+    subgraph LocalAI["Local inference (same machine / LAN)"]
+        LLM["Local LLM server"]
+        TTS["Self-hosted TTS server"]
+    end
+
+    subgraph State["State and memory"]
+        Raw[("Raw buffer<br/>SQLite")]
+        Mem0[("Mem0<br/>semantic memory")]
+        Chroma[("Chroma<br/>episodic / opinion RAG")]
+    end
+
+    subgraph Broadcast["Broadcast stack"]
+        OBS["OBS<br/>scenes, subtitles, Riria overlay, recording"]
+        VTS["VTube Studio<br/>Chiruru avatar + lip sync"]
+    end
+
+    subgraph Offline["Offline / pre-stream (never during live speech)"]
+        Editorial["Pre-stream editorial<br/>(cloud LLM)"]
+        PostStream["Unattended post-stream jobs<br/>(systemd oneshot)"]
+        Cloud["Cloud LLM<br/>(planning, scoring, evaluation)"]
+    end
+
+    RSS --> Fetch --> Select --> Cycle
+    Editorial -. "topic order cursor" .-> Cycle
+    Chat --> Comments --> Cycle
+    Cycle --> Prompt
+    Profiles --> Prompt
+    Chroma --> Prompt
+    Mem0 --> Prompt
+    Prompt --> Queue --> LLM
+    Recovery -. "health / reload" .-> LLM
+    LLM --> Speech --> TTS --> Playback
+    Playback --> OBS
+    Playback --> VTS
+    Speech --> Raw
+    Raw -- "batch summarisation" --> Mem0
+    Raw -- "batch summarisation" --> Chroma
+    Sweeper -- "start unit" --> PostStream
+    Editorial --> Cloud
+    PostStream --> Cloud
