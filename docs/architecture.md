@@ -54,7 +54,7 @@ It also registers three in-process scheduled jobs: live scheduling, Shorts sched
 | **LLM client** | Calls the local inference server's chat API, with or without streaming. The model name comes from configuration. It normalises request options and responses, and records which model actually answered and the outcome of each call. | Queueing or retries across callers |
 | **LLM execution queue** | Serializes live speech generation: one worker, a priority queue, and a timeout per job. Some background and supporting operations call the inference server through separate paths. | Choosing the model |
 | **Inference-server recovery service** | Detects stalls from runtime signals, confirms them before acting, and reloads the model through the server's management interface, within rate limits | Changing the model or the prompts |
-| **Speech pipeline** | Splits streamed text into sentence or comma chunks, sends them to the configured TTS backend, and schedules playback | Deciding what to say |
+| **Speech pipeline** | Splits each generated utterance into sentence or comma chunks, streams each chunk's audio from the configured TTS backend, and schedules playback | Deciding what to say |
 | **Playback and subtitles** | Plays audio into the broadcast mix, sets loudness and stereo position per character, starts subtitles when playback starts, and drives Chiruru's lip sync. Riria's avatar is a separate overlay in OBS. | Synthesis |
 | **Memory store** | Holds the raw buffer, history, Mem0, and Chroma collections. It runs batch summarisation and retrieval. | Real-time generation |
 | **Post-stream sweeper** | Is armed when a recording is saved, and starts the post-stream worker on a schedule | The post-stream work itself |
@@ -101,18 +101,83 @@ NEWS_INTRO ─► QUICK_TAKE ─► DEEP_DIVE ─► INTERACTIVE ─► (phase r
 
 ### 3.3 Generation to broadcast
 
-```
-prompt ─► LLM queue ─► local LLM server (streamed tokens)
-       ─► sentence/comma chunker ─► TTS server (streamed audio)
-       ─► per-speaker loudness normalisation ─► audio device ─► OBS mix
-                                             ├─► lip sync ─► VTube Studio
-                                             └─► subtitle shown on playback start ─► OBS
-       ─► exchange logged to raw buffer (SQLite)
+```mermaid
+%% Chiruru AI - speech generation and playback
+%% The LLM call returns a complete utterance. Streaming happens between the TTS server and audio playback.
+flowchart LR
+    Queue["LLM execution queue<br/>priority · timeout per job"]
+    LLM["Local LLM<br/>complete utterance"]
+    Check["Riria only:<br/>validate, regenerate<br/>or fall back"]
+    PQ["Playback queue<br/>shared by both characters"]
+    Chunk["Speech chunking<br/>sentence and comma<br/>boundaries"]
+    TTS["Streaming TTS<br/>voice per character"]
+    Play["Audio playback<br/>starts after a short buffer"]
+    Dev["Audio device calls<br/>isolated thread pool"]
+    OBS["OBS audio mix"]
+    Sub["Subtitles<br/>shown when playback starts"]
+    Avatar["Avatar / lip sync<br/>Chiruru: VTube Studio<br/>Riria: OBS overlay"]
+    Skip["A failed utterance or chunk<br/>is logged and skipped;<br/>the queue keeps playing"]
+
+    Queue --> LLM
+    LLM -->|Chiruru| PQ
+    LLM -->|Riria| Check --> PQ
+    PQ --> Chunk -->|"one chunk at a time"| TTS -->|"audio stream"| Play
+    Play -.->|"next chunk"| TTS
+    Play --- Dev
+    Play --> OBS & Sub & Avatar
+    PQ -.- Skip
+
+    classDef note fill:#f4f4f4,stroke:#999,color:#333,stroke-dasharray:4 3
+    class Skip,Dev note
 ```
 
+The source file is [diagrams/speech-pipeline.mmd](../diagrams/speech-pipeline.mmd).
+
+- **Where streaming happens.** The local LLM returns a complete utterance. Streaming happens between the TTS server and playback: a chunk starts playing while its audio is still arriving. Chunks are synthesized one after another.
+- **Both characters.** Chiruru and Riria share the playback queue, chunking, and playback path. Voice, loudness, stereo position, and avatar output are set per character.
 - **Guards.** TTS streaming is guarded against runaway generation. A chunk falls back to whole-file synthesis only if its playback has not started.
+- **Logging.** Each exchange is also written to the raw buffer (SQLite).
 
 ### 3.4 Post-stream pipeline
+
+```mermaid
+%% Chiruru AI - post-stream content production (conceptual structure, not an execution order)
+%% Heavy work runs in a separate worker process. Human review sits outside the automated path and is not a publishing gate.
+flowchart TD
+    Live["Live broadcast<br/>(live bot)"]
+    Data[("Recording and stream data<br/>full recording, stream events, logs")]
+    Sweeper["Post-stream trigger<br/>in the live bot"]
+    Orch["Post-stream orchestration<br/>separate worker process<br/>lock · backlog · preflight checks"]
+    Rec[("Receipts<br/>outcome of each action")]
+
+    Meta["Metadata and thumbnails<br/>local LLM + templates"]
+    Shorts["Shorts production<br/>rule-based cuts · local LLM scoring<br/>and metadata · cloud LLM opening line"]
+    HL["Highlight production<br/>cloud LLM clip selection ·<br/>local LLM hook text · rendering"]
+    Pub["Publishing / scheduling (YouTube)<br/>archive: description and thumbnail updated<br/>Shorts and highlights: uploaded as private<br/>with a scheduled publish time"]
+    Ana["Analytics and reports<br/>non-LLM data collection"]
+
+    Human["Human-assisted review<br/>(separate from the automated path)<br/>quality review · recovery · repackaging"]
+
+    Live -->|"stream ends,<br/>recording saved"| Data
+    Live -->|"arms on<br/>recording saved"| Sweeper
+    Sweeper -->|"starts"| Orch
+    Data --> Orch
+    Orch --> Meta & Shorts & HL & Ana
+    Meta & Shorts & HL --> Pub
+    Orch <-->|"record outcomes,<br/>retry unfinished work"| Rec
+
+    Rec -.->|"results"| Human
+    Ana -.->|"metrics"| Human
+    Human -.->|"manual re-run"| Orch
+    Human -.->|"optional revision<br/>before publish"| Pub
+
+    classDef human fill:#fdf2e3,stroke:#c08a2e,color:#40300f,stroke-dasharray:4 3
+    classDef external fill:#e8f1fb,stroke:#4a78b0,color:#1a2b40
+    class Human human
+    class Pub external
+```
+
+The source file is [diagrams/post-stream-pipeline.mmd](../diagrams/post-stream-pipeline.mmd). The diagram shows structure, not execution order.
 
 1. When the stream ends and its recording record is saved, the live bot **arms** the post-stream sweeper with that record. The sweeper takes the value directly and does not read a shared database.
 2. After a delay, the sweeper starts the post-stream systemd unit periodically, for a bounded number of attempts. The start is non-blocking. A catch-up check also runs shortly after the bot starts.
@@ -126,9 +191,12 @@ prompt ─► LLM queue ─► local LLM server (streamed tokens)
    - Shorts analytics;
    - reach reports.
 
-   All YouTube operations are serialized.
+   The actions run one at a time.
 5. Each action's receipt separates success, retryable failure, and terminal failure. Temporary resource contention does not consume the retry budget.
 6. The worker reports a machine-readable result, so the scheduler can tell finished work from remaining work.
+
+- **Generated, uploaded, published.** These are separate states. Description and thumbnail updates apply to the live archive directly. Shorts and highlight videos are uploaded as private videos with a scheduled publish time.
+- **Human review.** Quality review, recovery of failed work, and optional revisions run outside the automated path. They are not a gate that every video must pass before publication.
 
 ## 4. Local vs Cloud LLM
 
@@ -140,6 +208,8 @@ prompt ─► LLM queue ─► local LLM server (streamed tokens)
 | Pre-stream editorial: topic order and program labels | **Cloud** | **Before the stream** |
 | Optional reaction context for the current news topic | **Cloud** | During the stream, in the background |
 | Post-stream reflection and observation extraction | **Cloud** | After the stream |
+| Highlight clip selection and Shorts opening lines | **Cloud** | After the stream |
+| Shorts clip scoring and video metadata | **Local** | After the stream |
 | Offline evaluation and LLM-as-judge | **Cloud** | Offline only |
 
 **The boundary rule.** Local LLMs generate the final spoken output. Cloud services may provide optional context during a broadcast, but they do not generate live speech.
@@ -147,7 +217,7 @@ prompt ─► LLM queue ─► local LLM server (streamed tokens)
 - **Before the stream.** The editorial step runs only in the preparation phase. If it fails or its output runs out, topic selection falls back to the local queue.
 - **During the stream.** One optional background step can gather external reaction context for the current news topic. It runs as a background task with a deadline. The show does not wait for it. If the context is not ready when it is needed, the optional segment is skipped. When the context is used, it is input material for the local model.
 - **What the cloud may supply.** Planning inputs and optional context: topic order, short labels, membership judgments, and reaction context. Planning inputs reach the deep-dive prompt through a fixed template. Opinions, self-description, and every line spoken in the live stream come from the local model.
-- **After the stream.** Cloud models score and analyse what was already broadcast. They do not change the live show.
+- **After the stream.** Cloud models analyse what was already broadcast and take part in some post-stream production, such as selecting highlight clips. They do not change the live show.
 - **Provider independence.** Live speech does not depend on any cloud provider. If cloud services are unavailable, the show continues without the optional context. Cloud tasks sit outside the speech path, so they can be moved to another provider without touching live speech generation.
 
 ## 5. State and Memory

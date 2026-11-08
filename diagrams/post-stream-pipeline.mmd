@@ -1,0 +1,34 @@
+%% Chiruru AI - post-stream content production (conceptual structure, not an execution order)
+%% Heavy work runs in a separate worker process. Human review sits outside the automated path and is not a publishing gate.
+flowchart TD
+    Live["Live broadcast<br/>(live bot)"]
+    Data[("Recording and stream data<br/>full recording, stream events, logs")]
+    Sweeper["Post-stream trigger<br/>in the live bot"]
+    Orch["Post-stream orchestration<br/>separate worker process<br/>lock · backlog · preflight checks"]
+    Rec[("Receipts<br/>outcome of each action")]
+
+    Meta["Metadata and thumbnails<br/>local LLM + templates"]
+    Shorts["Shorts production<br/>rule-based cuts · local LLM scoring<br/>and metadata · cloud LLM opening line"]
+    HL["Highlight production<br/>cloud LLM clip selection ·<br/>local LLM hook text · rendering"]
+    Pub["Publishing / scheduling (YouTube)<br/>archive: description and thumbnail updated<br/>Shorts and highlights: uploaded as private<br/>with a scheduled publish time"]
+    Ana["Analytics and reports<br/>non-LLM data collection"]
+
+    Human["Human-assisted review<br/>(separate from the automated path)<br/>quality review · recovery · repackaging"]
+
+    Live -->|"stream ends,<br/>recording saved"| Data
+    Live -->|"arms on<br/>recording saved"| Sweeper
+    Sweeper -->|"starts"| Orch
+    Data --> Orch
+    Orch --> Meta & Shorts & HL & Ana
+    Meta & Shorts & HL --> Pub
+    Orch <-->|"record outcomes,<br/>retry unfinished work"| Rec
+
+    Rec -.->|"results"| Human
+    Ana -.->|"metrics"| Human
+    Human -.->|"manual re-run"| Orch
+    Human -.->|"optional revision<br/>before publish"| Pub
+
+    classDef human fill:#fdf2e3,stroke:#c08a2e,color:#40300f,stroke-dasharray:4 3
+    classDef external fill:#e8f1fb,stroke:#4a78b0,color:#1a2b40
+    class Human human
+    class Pub external

@@ -1,0 +1,27 @@
+%% Chiruru AI - speech generation and playback
+%% The LLM call returns a complete utterance. Streaming happens between the TTS server and audio playback.
+flowchart LR
+    Queue["LLM execution queue<br/>priority · timeout per job"]
+    LLM["Local LLM<br/>complete utterance"]
+    Check["Riria only:<br/>validate, regenerate<br/>or fall back"]
+    PQ["Playback queue<br/>shared by both characters"]
+    Chunk["Speech chunking<br/>sentence and comma<br/>boundaries"]
+    TTS["Streaming TTS<br/>voice per character"]
+    Play["Audio playback<br/>starts after a short buffer"]
+    Dev["Audio device calls<br/>isolated thread pool"]
+    OBS["OBS audio mix"]
+    Sub["Subtitles<br/>shown when playback starts"]
+    Avatar["Avatar / lip sync<br/>Chiruru: VTube Studio<br/>Riria: OBS overlay"]
+    Skip["A failed utterance or chunk<br/>is logged and skipped;<br/>the queue keeps playing"]
+
+    Queue --> LLM
+    LLM -->|Chiruru| PQ
+    LLM -->|Riria| Check --> PQ
+    PQ --> Chunk -->|"one chunk at a time"| TTS -->|"audio stream"| Play
+    Play -.->|"next chunk"| TTS
+    Play --- Dev
+    Play --> OBS & Sub & Avatar
+    PQ -.- Skip
+
+    classDef note fill:#f4f4f4,stroke:#999,color:#333,stroke-dasharray:4 3
+    class Skip,Dev note
