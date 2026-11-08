@@ -1,0 +1,21 @@
+%% Chiruru AI - evidence-driven improvement loop
+%% Not every change takes every step. Observation is automated; investigation and decisions involve the owner and AI assistants.
+flowchart TD
+    Obs["Production observation<br/>logs, post-stream audits"]
+    Inv["Investigation<br/>what is actually happening?"]
+    Exp["Experiment / verification<br/>offline, when uncertainty needs testing"]
+    Dec{"Decision<br/>GO · NO-GO · HOLD"}
+    Impl["Implementation"]
+    Prod["Production"]
+    Rec[("Records<br/>decisions, results,<br/>conditions to reopen")]
+
+    Obs --> Inv --> Exp --> Dec
+    Inv -. "bug fix / refactor:<br/>direct fix + tests" .-> Impl
+    Dec -->|GO| Impl --> Prod --> Obs
+    Dec -->|"record decisions<br/>and outcomes"| Rec
+    Dec -. "evidence or evaluator<br/>not good enough" .-> Inv
+
+    classDef auto fill:#e8f1fb,stroke:#4a78b0,color:#1a2b40
+    classDef judge fill:#fdf2e3,stroke:#c08a2e,color:#40300f
+    class Obs,Prod auto
+    class Inv,Exp,Dec judge
