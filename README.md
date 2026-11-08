@@ -140,6 +140,7 @@ The source file is [diagrams/system-overview.mmd](diagrams/system-overview.mmd).
 - [docs/architecture.md](docs/architecture.md): runtime architecture, component responsibilities, data and control flow, local vs cloud boundary, state, failure handling, and observability.
 - [docs/design-decisions.md](docs/design-decisions.md): six design decisions, each with the problem, the alternatives, and the trade-offs.
 - [diagrams/system-overview.mmd](diagrams/system-overview.mmd): Mermaid source for the overview diagram.
+- [docs/engineering-workflow.md](docs/engineering-workflow.md): how the system is developed. It covers how the human owner and AI assistants divide judgment and authority, and how changes to an uncertain LLM system are decided from evidence. Mermaid sources: [engineering-collaboration.mmd](diagrams/engineering-collaboration.mmd), [evidence-driven-loop.mmd](diagrams/evidence-driven-loop.mmd).
 
 ## Limitations
 

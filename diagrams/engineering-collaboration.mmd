@@ -1,0 +1,11 @@
+%% Chiruru AI - Human-AI collaboration (roles and information flow, not a fixed pipeline)
+%% The two AI assistants do not share state. Information between them passes through the owner.
+flowchart LR
+    Conv["Conversational AI<br/><b>Frame · Compare · Recommend</b><br/>requirements, architecture options,<br/>technical recommendations, review"]
+    Owner(("Human Owner<br/><b>Direction · Accountability</b><br/>intent, priorities,<br/>important trade-offs,<br/>final say"))
+    Eng["Engineering AI<br/><b>Investigate · Build · Verify</b><br/>code investigation, implementation,<br/>tests, experiments"]
+    Scope["Delegated scope<br/>Engineering AI makes technical GO / NO-GO here.<br/>Outside it, and for important product decisions,<br/>the Owner decides."]
+
+    Owner <-->|"goals, context, results<br/>⇄ options, recommendations, reviews"| Conv
+    Owner <-->|"requests, scope, delegation<br/>⇄ findings, evidence, verdicts"| Eng
+    Eng -.- Scope
