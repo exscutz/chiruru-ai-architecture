@@ -28,9 +28,9 @@ A single long-running Python process (asyncio) owns the live show. It has six ma
 1. **Content intake.** It fetches news from RSS feeds and extracts the article text. A local LLM scores each item for importance, and candidates are deduplicated and balanced across categories.
 2. **Show control.** A deterministic **phase state machine** decides what happens next. The phases are a news intro, a quick take, a deep dive, interactive chat, and several monologue and talk segments.
 3. **Generation.** Prompts combine persona, task, and retrieved context. Live speech generation is serialized through **one priority-ordered queue** to a locally hosted LLM server. Some background and supporting operations use separate inference paths.
-4. **Speech and broadcast.** Streamed LLM output is split into sentences and synthesized by a self-hosted TTS server. Each character has a separate voice. The audio is played into OBS, drives Chiruru's lip sync in VTube Studio, and triggers subtitles when playback starts.
+4. **Speech and broadcast.** Each generated utterance is split into sentence-sized chunks, and each chunk's audio is streamed from a self-hosted TTS server. Each character has a separate voice. The audio is played into OBS, drives Chiruru's lip sync in VTube Studio, and triggers subtitles when playback starts.
 5. **Memory.** Every exchange goes into a SQLite raw buffer. A batch process summarises it into **Mem0** (semantic and viewer memory) and **Chroma** (episodic and opinion retrieval).
-6. **Offline work.** Before the stream, a cloud LLM proposes the show's topic order. After the stream, systemd jobs handle description, thumbnail, Shorts, highlights, and analytics. They track progress in receipts so they can be retried safely. Some of them use a cloud LLM for scoring and analysis.
+6. **Offline work.** Before the stream, a cloud LLM proposes the show's topic order. After the stream, systemd jobs handle description, thumbnail, Shorts, highlights, and analytics. They track progress in receipts so they can be retried safely. Some of them use a cloud LLM, for analysis and for parts of highlight and Shorts production.
 
 ## Architecture Diagram
 
@@ -140,6 +140,7 @@ The source file is [diagrams/system-overview.mmd](diagrams/system-overview.mmd).
 - [docs/architecture.md](docs/architecture.md): runtime architecture, component responsibilities, data and control flow, local vs cloud boundary, state, failure handling, and observability.
 - [docs/design-decisions.md](docs/design-decisions.md): six design decisions, each with the problem, the alternatives, and the trade-offs.
 - [diagrams/system-overview.mmd](diagrams/system-overview.mmd): Mermaid source for the overview diagram.
+- [diagrams/speech-pipeline.mmd](diagrams/speech-pipeline.mmd) and [diagrams/post-stream-pipeline.mmd](diagrams/post-stream-pipeline.mmd): Mermaid sources for the speech generation and playback pipeline ([architecture §3.3](docs/architecture.md#33-generation-to-broadcast)) and the post-stream content production pipeline ([architecture §3.4](docs/architecture.md#34-post-stream-pipeline)).
 - [docs/engineering-workflow.md](docs/engineering-workflow.md): how the system is developed. It covers how the human owner and AI assistants divide judgment and authority, and how changes to an uncertain LLM system are decided from evidence. Mermaid sources: [engineering-collaboration.mmd](diagrams/engineering-collaboration.mmd), [evidence-driven-loop.mmd](diagrams/evidence-driven-loop.mmd).
 
 ## Limitations
