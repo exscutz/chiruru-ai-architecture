@@ -12,7 +12,7 @@ flowchart TD
     Obs --> Inv --> Exp --> Dec
     Inv -. "bug fix / refactor:<br/>direct fix + tests" .-> Impl
     Dec -->|GO| Impl --> Prod --> Obs
-    Dec -->|"every verdict,<br/>incl. NO-GO / HOLD"| Rec
+    Dec -->|"record decisions<br/>and outcomes"| Rec
     Dec -. "evidence or evaluator<br/>not good enough" .-> Inv
 
     classDef auto fill:#e8f1fb,stroke:#4a78b0,color:#1a2b40

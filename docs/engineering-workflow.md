@@ -66,7 +66,7 @@ flowchart TD
     Obs --> Inv --> Exp --> Dec
     Inv -. "bug fix / refactor:<br/>direct fix + tests" .-> Impl
     Dec -->|GO| Impl --> Prod --> Obs
-    Dec -->|"every verdict,<br/>incl. NO-GO / HOLD"| Rec
+    Dec -->|"record decisions<br/>and outcomes"| Rec
     Dec -. "evidence or evaluator<br/>not good enough" .-> Inv
 
     classDef auto fill:#e8f1fb,stroke:#4a78b0,color:#1a2b40
@@ -78,7 +78,7 @@ flowchart TD
 - **Not every change goes around the whole loop.** Incident fixes and refactors usually skip experiments. Experiments are kept for questions where the answer is genuinely uncertain, such as whether one version of speech behavior is better than another.
 - **Observation is automated, judgment is not.** In the diagram, blue nodes run on their own. Orange nodes involve the owner and the AI assistants. Nothing in the loop adopts a change automatically. This is not a self-running improvement cycle.
 - **A decision can send the work back.** If the evidence is thin, or the evaluation method is in doubt, the next step is more investigation, not a rollout.
-- **Negative results are kept.** NO-GO and HOLD verdicts are recorded with their reasons and the conditions under which the question may be reopened. A rejected idea should not quietly come back. A held idea should be easy to revisit when the conditions really change.
+- **Negative results are kept.** Decisions and outcomes, including NO-GO and HOLD, are recorded with their reasons and, where relevant, the conditions under which the question may be reopened. A rejected idea should not quietly come back. A held idea should be easy to revisit when the conditions really change.
 
 ## 3. Engineering Principles
 
@@ -94,9 +94,8 @@ A broken evaluation is worse than none, because it produces confident wrong deci
 
 AI assistants do not remember earlier sessions, so decisions have to be written down.
 
-- Design decisions, experiment results, and NO-GO verdicts are recorded. Each record keeps the reasoning, the rejected alternatives, and the conditions under which it should be reconsidered.
-- Decision records, held in an internal tool called Decision Hub, are looked up by file and topic before related work starts. Later decisions refer to earlier ones explicitly when they narrow or replace them.
-- Having a record does not guarantee that it gets read. Looking up past decisions is part of the workflow, but nothing enforces it mechanically.
+- Design decisions, experiment results, and NO-GO verdicts are written down with the reasoning, the rejected alternatives, and the conditions under which they should be reconsidered.
+- Decision Hub helps retrieve relevant past decisions across AI sessions, although retrieval is not mechanically enforced. Later decisions refer to earlier ones explicitly when they narrow or replace them.
 
 ### C. Verification follows the type of change
 
@@ -107,7 +106,7 @@ AI assistants do not remember earlier sessions, so decisions have to be written 
 | Quality comparison | Offline evaluation against a noise floor, then a canary if needed |
 | Architecture | Record the decision, then roll out in stages and verify each stage |
 
-Not every change needs an A/B test or a heavy experiment. A/B tests are used only for quality comparisons (see [Design Decisions §5](design-decisions.md)). Other changes still need an offline check and a way to roll back.
+Not every change needs an A/B test or a heavy experiment. A/B tests are used only for quality comparisons (see [Design Decisions §5](design-decisions.md)). Verification and rollback measures are selected according to the type and risk of each change.
 
 ## 4. Lessons and Limitations
 
@@ -115,10 +114,10 @@ Not every change needs an A/B test or a heavy experiment. A/B tests are used onl
 
 1. **Offline evaluation passed.** A feature that fills gaps in the show with short spoken segments passed every offline criterion.
 2. **Production did not behave as expected.** After it was switched on, the live output fell short of what the offline results had predicted.
-3. **The harness was more generous than production.** Investigation found that the offline setup gave the model inputs that production did not. In one case it read a cleaned-up field where production saw raw markup. In another it used material that does not yet exist at the moment the feature runs. In a third it delivered the character's persona through a channel that the production prompt did not use. This happened more than once before it was recognized as a pattern.
+3. **The inputs did not match.** The offline harness supplied context that was unavailable or represented differently in production. As a result, passing offline evaluations did not predict live behavior. This happened more than once before it was recognized as a pattern.
 4. **Parity became a precondition for interpreting results.** Offline results are now read only after the inputs the model receives have been compared, component by component, with what production renders. All-green offline metrics no longer count as evidence of parity on their own.
 
-**Lesson:** if an offline harness is *poorer* than production, the effect usually fails to reproduce, which is easy to notice. If it is *richer* than production, the results look better than reality, which is hard to notice. The problem was not prevented in advance. It was found in production, and the lesson changed how every later experiment is read.
+**Lesson:** the problem was not prevented in advance. It was found in production, and the lesson changed how later offline results are read.
 
 ### Limitations
 
